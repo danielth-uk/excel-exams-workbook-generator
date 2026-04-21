@@ -14,6 +14,12 @@ interface StepGenerateProps {
   onReset: () => void;
 }
 
+type SheetPreview = {
+  name: string;
+  data: (string | number | null)[][];
+  mappedCells: Set<string>;
+};
+
 export function StepGenerate({
   datesFile,
   templateFile,
@@ -23,6 +29,8 @@ export function StepGenerate({
   onReset,
 }: StepGenerateProps) {
   const [isGenerating, setIsGenerating] = useState(false);
+  const [previewData, setPreviewData] = useState<SheetPreview[] | null>(null);
+  const [activeTab, setActiveTab] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
   const parseCellAddress = (address: string): { row: number; col: number } => {
@@ -61,9 +69,14 @@ export function StepGenerate({
 
   const formatDateTime = (
     value: any,
-    format: "all" | "date" | "time" | "ampm",
+    format: "all" | "date" | "time" | "ampm" | "none",
   ): string => {
     if (!value) return "";
+
+    if (format === "none") {
+      // Strip double quotes from the value
+      return String(value).replace(/^"(.*)"$/, '$1');
+    }
 
     let date: Date;
     let timeStr = String(value);
@@ -91,7 +104,9 @@ export function StepGenerate({
         date = new Date(year, month, day, adjustedHours, minutes);
       } else {
         // Try parsing dd/mm/yyyy or dd.mm.yyyy formats
-        const dateOnlyMatch = timeStr.match(/(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{2,4})/);
+        const dateOnlyMatch = timeStr.match(
+          /(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{2,4})/,
+        );
         if (dateOnlyMatch) {
           const day = parseInt(dateOnlyMatch[1], 10);
           const month = parseInt(dateOnlyMatch[2], 10) - 1;
@@ -100,16 +115,16 @@ export function StepGenerate({
           if (year < 100) {
             year += 2000;
           }
-          
+
           // Check if there's also time in the string
           const timeMatch = timeStr.match(/(\d{1,2}):(\d{2})/);
           let hours = 0;
           let minutes = 0;
-          
+
           if (timeMatch) {
             hours = parseInt(timeMatch[1], 10);
             minutes = parseInt(timeMatch[2], 10);
-            
+
             // Check for PM/AM
             const isPM = /PM/i.test(timeStr);
             const isAM = /AM/i.test(timeStr);
@@ -119,14 +134,14 @@ export function StepGenerate({
               hours = 0;
             }
           }
-          
+
           date = new Date(year, month, day, hours, minutes);
         } else {
           // Try to parse as standard date
           date = new Date(value);
           if (isNaN(date.getTime())) {
             // If can't parse, return original
-            console.log('Cannot parse date:', value);
+            console.log("Cannot parse date:", value);
             return String(value);
           }
         }
@@ -189,6 +204,7 @@ export function StepGenerate({
       const workbook = new ExcelJS.Workbook();
       const selectedRowIndices = Array.from(selectedRows).sort((a, b) => a - b);
       const usedSheetNames = new Set<string>();
+      const previewSheets: SheetPreview[] = [];
 
       for (const rowIndex of selectedRowIndices) {
         const rowData = datesFile.rows[rowIndex];
@@ -208,15 +224,29 @@ export function StepGenerate({
         }
         usedSheetNames.add(finalSheetName);
 
-        usedSheetNames.add(finalSheetName);
-
         // Copy template worksheet
         const templateWorksheet = templateFile.workbook.worksheets[0];
         const newSheet = workbook.addWorksheet(finalSheetName);
 
+        // Determine sheet dimensions
+        let maxRow = 0;
+        let maxCol = 0;
+        templateWorksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+          maxRow = Math.max(maxRow, rowNumber);
+          row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+            maxCol = Math.max(maxCol, colNumber);
+          });
+        });
+
+        // Initialize preview data array
+        const previewDataArray: (string | number | null)[][] = [];
+        const mappedCells = new Set<string>();
+
         // Copy all cells from template
         templateWorksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
           const newRow = newSheet.getRow(rowNumber);
+          const previewRow: (string | number | null)[] = [];
+
           row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
             const newCell = newRow.getCell(colNumber);
 
@@ -227,7 +257,26 @@ export function StepGenerate({
             if (cell.style) {
               newCell.style = cell.style;
             }
+
+            // Add to preview (convert cell value to displayable format)
+            const cellValue = cell.value;
+            if (cellValue === null || cellValue === undefined) {
+              previewRow.push(null);
+            } else if (typeof cellValue === 'object' && 'richText' in cellValue) {
+              previewRow.push(cellValue.richText.map((t: any) => t.text).join(''));
+            } else if (typeof cellValue === 'object' && 'formula' in cellValue) {
+              previewRow.push(`=${cellValue.formula}`);
+            } else {
+              previewRow.push(String(cellValue));
+            }
           });
+
+          // Fill remaining columns with null if needed
+          while (previewRow.length < maxCol) {
+            previewRow.push(null);
+          }
+
+          previewDataArray.push(previewRow);
           newRow.commit();
         });
 
@@ -245,6 +294,14 @@ export function StepGenerate({
           }
 
           cell.value = dataValue;
+
+          // Update preview data with mapped value
+          if (previewDataArray[rowNum]) {
+            previewDataArray[rowNum][colNum] = dataValue === null || dataValue === undefined ? null : String(dataValue);
+          }
+
+          // Track which cells were mapped
+          mappedCells.add(mapping.cellAddress);
         }
 
         // Copy column widths
@@ -254,15 +311,28 @@ export function StepGenerate({
             newCol.width = col.width;
           }
         });
+
+        // Add to preview data
+        previewSheets.push({
+          name: finalSheetName,
+          data: previewDataArray,
+          mappedCells,
+        });
       }
 
-      // Generate download
+      // Generate download blob
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       });
       const url = URL.createObjectURL(blob);
+
+      // Store URL for manual download later
       setDownloadUrl(url);
+
+      // Set preview data to show preview UI
+      setPreviewData(previewSheets);
+      setActiveTab(0);
     } catch (error) {
       console.error("Error generating Excel:", error);
       alert("Ugh! Error making Excel! Check console!");
@@ -276,82 +346,177 @@ export function StepGenerate({
       <CardHeader>
         <CardTitle>Step 4: Generate Output</CardTitle>
         <CardDescription>
-          Push button, get Excel with sheets! One sheet per row!
+          {previewData 
+            ? "Review your Excel file below, then download when ready!"
+            : "Generate preview first, then download! One sheet per row!"
+          }
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        <div className="bg-slate-50 rounded-lg p-6 space-y-3">
-          <div className="flex justify-between">
-            <span className="text-slate-600">Selected Rows:</span>
-            <span className="font-semibold">{selectedRows.size}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">Column Mappings:</span>
-            <span className="font-semibold">{mappings.length}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">Output Sheets:</span>
-            <span className="font-semibold">{selectedRows.size}</span>
-          </div>
-        </div>
+        {!previewData && (
+          <>
+            <div className="bg-slate-50 rounded-lg p-6 space-y-3">
+              <div className="flex justify-between">
+                <span className="text-slate-600">Selected Rows:</span>
+                <span className="font-semibold">{selectedRows.size}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-600">Column Mappings:</span>
+                <span className="font-semibold">{mappings.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-600">Output Sheets:</span>
+                <span className="font-semibold">{selectedRows.size}</span>
+              </div>
+            </div>
 
-        <div className="border rounded-lg p-4">
-          <h4 className="font-semibold mb-2">What happen:</h4>
-          <ul className="text-sm text-slate-600 space-y-1 list-disc list-inside">
-            <li>
-              Create {selectedRows.size} new sheets (one per selected row)
-            </li>
-            <li>Each sheet named from Column A</li>
-            <li>Template copied to each sheet</li>
-            <li>{mappings.length} cells replaced with row data</li>
-          </ul>
-        </div>
+            <div className="border rounded-lg p-4">
+              <h4 className="font-semibold mb-2">What happen:</h4>
+              <ul className="text-sm text-slate-600 space-y-1 list-disc list-inside">
+                <li>
+                  Create {selectedRows.size} new sheets (one per selected row)
+                </li>
+                <li>Each sheet named from Column A</li>
+                <li>Template copied to each sheet</li>
+                <li>{mappings.length} cells replaced with row data</li>
+              </ul>
+            </div>
 
-        {!downloadUrl && (
-          <Button
-            onClick={generateExcel}
-            disabled={isGenerating}
-            size="lg"
-            className="w-full"
-          >
-            {isGenerating ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Making Excel... Please wait!
-              </>
-            ) : (
-              "Generate Excel File"
-            )}
-          </Button>
+            <Button
+              onClick={generateExcel}
+              disabled={isGenerating}
+              size="lg"
+              className="w-full"
+            >
+              {isGenerating ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Generating Preview... Please wait!
+                </>
+              ) : (
+                "Generate Preview"
+              )}
+            </Button>
+
+            <div className="flex justify-between pt-4">
+              <Button variant="outline" onClick={onBack}>
+                Back
+              </Button>
+            </div>
+          </>
         )}
 
-        {downloadUrl && (
-          <div className="space-y-3">
-            <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
-              <p className="text-green-800 font-semibold mb-2">
-                Excel ready! Download now!
+        {previewData && (
+          <>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <p className="text-blue-800 font-semibold text-center">
+                Preview Generated Successfully!
+              </p>
+              <p className="text-blue-700 text-sm text-center mt-1">
+                Review your {previewData.length} sheet{previewData.length !== 1 ? 's' : ''} below, then download when ready
               </p>
             </div>
 
-            <a href={downloadUrl} download="output.xlsx" className="block">
-              <Button size="lg" className="w-full">
-                <Download className="mr-2 h-4 w-4" />
-                Download Excel File
-              </Button>
-            </a>
+            {/* Sheet tabs */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="flex gap-1 p-2 bg-slate-100 overflow-x-auto">
+                {previewData.map((sheet, index) => (
+                  <button
+                    key={index}
+                    onClick={() => setActiveTab(index)}
+                    className={`px-4 py-2 rounded whitespace-nowrap transition-colors ${
+                      activeTab === index
+                        ? "bg-white shadow-sm font-semibold text-slate-900"
+                        : "bg-slate-50 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    {sheet.name}
+                  </button>
+                ))}
+              </div>
 
-            <Button variant="outline" onClick={onReset} className="w-full">
-              Start Over (Make New One)
-            </Button>
-          </div>
-        )}
+              {/* Sheet preview content */}
+              <div className="p-4 bg-white max-h-[600px] overflow-auto">
+                {previewData[activeTab] && (
+                  <div className="overflow-x-auto">
+                    <table className="border-collapse border border-slate-300 text-sm">
+                      <thead>
+                        <tr className="bg-slate-100">
+                          <th className="border border-slate-300 px-2 py-1 font-semibold text-slate-600 w-12"></th>
+                          {previewData[activeTab].data[0]?.map((_, colIndex) => (
+                            <th
+                              key={colIndex}
+                              className="border border-slate-300 px-2 py-1 font-semibold text-slate-600"
+                            >
+                              {String.fromCharCode(65 + (colIndex % 26))}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewData[activeTab].data.map((row, rowIndex) => (
+                          <tr key={rowIndex}>
+                            <td className="border border-slate-300 px-2 py-1 text-center text-slate-500 bg-slate-50 font-medium">
+                              {rowIndex + 1}
+                            </td>
+                            {row.map((cell, colIndex) => {
+                              const cellAddress = `${String.fromCharCode(65 + colIndex)}${rowIndex + 1}`;
+                              const isMapped = previewData[activeTab].mappedCells.has(cellAddress);
+                              return (
+                                <td
+                                  key={colIndex}
+                                  className={`border border-slate-300 px-2 py-1 ${
+                                    isMapped ? "bg-blue-50 font-medium" : ""
+                                  }`}
+                                >
+                                  {cell ?? ""}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
 
-        {!downloadUrl && (
-          <div className="flex justify-between pt-4">
-            <Button variant="outline" onClick={onBack}>
-              Back
-            </Button>
-          </div>
+              {/* Legend */}
+              <div className="p-3 bg-slate-50 border-t border-slate-200">
+                <div className="flex items-center gap-4 text-xs text-slate-600">
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-blue-50 border border-slate-300"></div>
+                    <span>Mapped cells (populated from data)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-white border border-slate-300"></div>
+                    <span>Template cells</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Download and action buttons */}
+            <div className="space-y-3">
+              {downloadUrl && (
+                <a href={downloadUrl} download="output.xlsx" className="block">
+                  <Button size="lg" className="w-full">
+                    <Download className="mr-2 h-4 w-4" />
+                    Download Excel File
+                  </Button>
+                </a>
+              )}
+
+              <div className="flex gap-3">
+                <Button variant="outline" onClick={() => { setPreviewData(null); setDownloadUrl(null); }} className="flex-1">
+                  Back to Edit Mappings
+                </Button>
+                <Button variant="outline" onClick={onReset} className="flex-1">
+                  Start Over
+                </Button>
+              </div>
+            </div>
+          </>
         )}
       </CardContent>
     </>

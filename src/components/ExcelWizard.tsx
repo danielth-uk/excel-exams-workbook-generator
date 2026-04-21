@@ -1,10 +1,9 @@
-import { useState } from 'react';
-import type { Workbook } from 'exceljs';
-import { StepUpload } from './StepUpload';
-import { StepSelectRows } from './StepSelectRows';
-import { StepMapping } from './StepMapping';
-import { StepGenerate } from './StepGenerate';
-import { Card } from './ui/card';
+import { useState } from "react";
+import type { Workbook } from "exceljs";
+import { StepUpload } from "./StepUpload";
+import { StepSelectRows } from "./StepSelectRows";
+import { StepMapping } from "./StepMapping";
+import { Card } from "./ui/card";
 
 export type ExcelData = {
   headers: string[];
@@ -20,7 +19,7 @@ export type TemplateData = {
 export type CellMapping = {
   cellAddress: string; // like "A1"
   columnIndex: number; // which column from dates file
-  dateTimeFormat?: 'all' | 'date' | 'time' | 'ampm'; // for date/time columns
+  dateTimeFormat?: "all" | "date" | "time" | "ampm" | "none"; // for date/time columns
 };
 
 export function ExcelWizard() {
@@ -29,22 +28,26 @@ export function ExcelWizard() {
   const [templateFile, setTemplateFile] = useState<TemplateData | null>(null);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const [mappings, setMappings] = useState<CellMapping[]>([]);
+  const [sheetNameTemplate, setSheetNameTemplate] = useState<string>("{A}");
 
   return (
     <div className="min-h-screen bg-slate-50 p-8">
       <div className="max-w-7xl mx-auto">
-        <h1 className="text-4xl font-bold text-slate-900 mb-2">Excel Sheet Maker</h1>
+        <h1 className="text-4xl font-bold text-slate-900 mb-2">
+          Excel Sheet Maker
+        </h1>
         <p className="text-slate-600 mb-8">
-          Upload files, pick rows, map columns, get output! Easy like rock smash!
+          Upload files, pick rows, map columns, get output! Easy like rock
+          smash!
         </p>
 
         {/* Step indicator */}
         <div className="flex gap-2 mb-8">
-          {[1, 2, 3, 4].map((s) => (
+          {[1, 2, 3].map((s) => (
             <div
               key={s}
               className={`flex-1 h-2 rounded ${
-                s <= step ? 'bg-slate-900' : 'bg-slate-200'
+                s <= step ? "bg-slate-900" : "bg-slate-200"
               }`}
             />
           ))}
@@ -76,25 +79,18 @@ export function ExcelWizard() {
               datesFile={datesFile}
               templateFile={templateFile}
               mappings={mappings}
-              onMappingsChange={setMappings}
-              onBack={() => setStep(2)}
-              onNext={() => setStep(4)}
-            />
-          )}
-
-          {step === 4 && datesFile && templateFile && (
-            <StepGenerate
-              datesFile={datesFile}
-              templateFile={templateFile}
               selectedRows={selectedRows}
-              mappings={mappings}
-              onBack={() => setStep(3)}
+              sheetNameTemplate={sheetNameTemplate}
+              onMappingsChange={setMappings}
+              onSheetNameTemplateChange={setSheetNameTemplate}
+              onBack={() => setStep(2)}
               onReset={() => {
                 setStep(1);
                 setDatesFile(null);
                 setTemplateFile(null);
                 setSelectedRows(new Set());
                 setMappings([]);
+                setSheetNameTemplate("{A}");
               }}
             />
           )}
